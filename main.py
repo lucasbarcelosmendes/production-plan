@@ -74,25 +74,10 @@ def _parse_inputs(sheets) -> dict:
     return out
 
 
-def main():
-    USER = os.getlogin()
-
-    ROOT = Path(
-        fr"C:\Users\{USER}\Ambatovy\DMSA - Asset Performance & Excellence - Documents"
-        r"\Strategy and Standardization\3. Improvement Projects\9. Smart Production Plan"
-        r"\SPP development\Python"
-    )
-    INPUT_XLSX = Path(
-        fr"C:\Users\{USER}\Ambatovy\DMSA - Asset Performance & Excellence - Documents"
-        r"\Strategy and Standardization\3. Improvement Projects\9. Smart Production Plan"
-        r"\SPP development\SPP.xlsx"
-    )
-    OUTPUT_DIR = ROOT / "outputs"
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT_XLSX = OUTPUT_DIR / "SPP_results.xlsx"
-
-    # Load workbook
-    sheets = pd.read_excel(INPUT_XLSX, sheet_name=None, engine="openpyxl")
+def run_transformations(config: dict):
+    sheets = config["sheets"]
+    output_xlsx = Path(config["output_xlsx"])
+    output_xlsx.parent.mkdir(parents=True, exist_ok=True)
 
     # Inputs + calendars
     inputs = _parse_inputs(sheets)
@@ -162,7 +147,9 @@ def main():
     else:
         # Fallback to selected feed if constrained not available
         pf_col = next((c for c in pal_feed_selected.columns if c.lower() == "pal feed (t)".lower()), None)
-        pal_feed_constrained = pal_feed_selected[["Date", pf_col]].rename(columns={pf_col: "PAL Feed (t)"}) if pf_col else pal_feed_constrained
+        pal_feed_constrained = (
+            pal_feed_selected[["Date", pf_col]].rename(columns={pf_col: "PAL Feed (t)"}) if pf_col else pal_feed_constrained
+        )
 
     # 9) Nickel production & refinery inventory (now using the **constrained** PAL feed)
     ni_prod_df = compute_prod_ni(inputs, op_sched, pal_feed_constrained, mine_plan_daily)
@@ -214,7 +201,7 @@ def main():
         acid_model_df=acid_model_df,
         mine_plan_daily=mine_plan_daily,
     )
-    
+
     lpg_df = compute_commodity_lpg(
         inputs=inputs,
         operation_schedule=op_sched,
@@ -329,12 +316,12 @@ def main():
     if ni_prod_df is not None and not ni_prod_df.empty:
         merged = merged.merge(
             ni_prod_df[["Date", "Ni Fed to Ref (t)", "Ni Prod (t)", "Ni inventory in refinery (t)"]],
-            on="Date", how="left"
+            on="Date", how="left",
         )
     if co_prod_df is not None and not co_prod_df.empty:
         merged = merged.merge(
             co_prod_df[["Date", "Co Fed to Ref (t)", "Co Prod (t)", "Co inventory in refinery (t)"]],
-            on="Date", how="left"
+            on="Date", how="left",
         )
     if amsul_df is not None and not amsul_df.empty:
         merged = merged.merge(amsul_df, on="Date", how="left")
@@ -390,7 +377,7 @@ def main():
         except Exception:
             pass
 
-    with pd.ExcelWriter(OUTPUT_XLSX, engine="openpyxl") as xw:
+    with pd.ExcelWriter(output_xlsx, engine="openpyxl") as xw:
         _write_sheet(xw, merged, "Plant Operation Schedule")
         # Node-level tabs
         _write_sheet(xw, op_sched, "Operation Schedule")
@@ -418,9 +405,20 @@ def main():
         _write_sheet(xw, caustic_df, "Commodity - Caustic Soda")
         _write_sheet(xw, merged_month, "Summary by Month")
 
-    print(f"[main] Rows written: {len(merged)} -> {OUTPUT_XLSX}")
+    print(f"[run_transformations] Rows written: {len(merged)} -> {output_xlsx}")
     return mine_plan_daily, merged, merged_month
+
+
+def main(config: dict = None):
+    config = dict(config or {})
+    input_xlsx = Path(config.get("input_xlsx", "SPP.xlsx"))
+    output_xlsx = Path(config.get("output_xlsx", Path("outputs") / "SPP_results.xlsx"))
+    config.setdefault("output_xlsx", output_xlsx)
+    if "sheets" not in config:
+        config["sheets"] = pd.read_excel(input_xlsx, sheet_name=None, engine="openpyxl")
+    return run_transformations(config)
 
 
 if __name__ == "__main__":
     mine_plan_daily, merged, merged_month = main()
+
