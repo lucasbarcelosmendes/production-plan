@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="160">
+  <rect width="400" height="160" fill="#ffffff" stroke="#000000"/>
+  <text x="10" y="20" font-family="sans-serif" font-size="16">Production Plan</text>
+  <text x="10" y="50" font-family="sans-serif" font-size="14">Input Excel:</text>
+  <rect x="110" y="35" width="200" height="20" fill="#f0f0f0" stroke="#000000"/>
+  <text x="115" y="50" font-size="12" font-family="sans-serif">SPP.xlsx</text>
+  <rect x="320" y="35" width="60" height="20" fill="#e0e0e0" stroke="#000000"/>
+  <text x="330" y="50" font-size="12" font-family="sans-serif">Browse</text>
+  <text x="10" y="90" font-size="14" font-family="sans-serif">Output Excel:</text>
+  <rect x="110" y="75" width="200" height="20" fill="#f0f0f0" stroke="#000000"/>
+  <text x="115" y="90" font-size="12" font-family="sans-serif">outputs/SPP_results.xlsx</text>
+  <rect x="320" y="75" width="60" height="20" fill="#e0e0e0" stroke="#000000"/>
+  <text x="330" y="90" font-size="12" font-family="sans-serif">Browse</text>
+  <rect x="170" y="110" width="60" height="25" fill="#d0d0d0" stroke="#000000"/>
+  <text x="187" y="127" font-size="14" font-family="sans-serif">Run</text>
+</svg>
