@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Production Plan Upload</title>
+</head>
+<body>
+    <h1>Upload SPP.xlsx</h1>
+    <form action="/run" method="post" enctype="multipart/form-data">
+        <input type="file" name="spp_file" accept=".xlsx" required>
+        <button type="submit">Run</button>
+    </form>
+</body>
+</html>
