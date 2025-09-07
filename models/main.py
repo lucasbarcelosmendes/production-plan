@@ -51,20 +51,38 @@ def _pick_sheet(sheets, *names):
     return None
 
 
-def main():
-    USER = os.getlogin()
 
-    ROOT = Path(
-        fr"C:\Users\{USER}\Ambatovy\DMSA - Asset Performance & Excellence - Documents"
-        r"\Strategy and Standardization\3. Improvement Projects\9. Smart Production Plan"
-        r"\SPP development\Python"
-    )
-    INPUT_XLSX = Path(
-        fr"C:\Users\{USER}\Ambatovy\DMSA - Asset Performance & Excellence - Documents"
-        r"\Strategy and Standardization\3. Improvement Projects\9. Smart Production Plan"
-        r"\SPP development\SPP.xlsx"
-    )
-    OUTPUT_DIR = ROOT / "outputs"
+def main(spp_path: str | Path | None = None, output_dir: str | Path | None = None):
+    """Run the Smart Production Plan calculation.
+
+    Parameters
+    ----------
+    spp_path : str or Path, optional
+        Path to the ``SPP.xlsx`` input file. When ``None`` the original
+        Windows-specific default location is used.
+    output_dir : str or Path, optional
+        Directory where the resulting ``SPP_results.xlsx`` file will be written.
+        When ``None`` the original ``outputs`` directory inside the Ambatovy
+        project path is used.
+    """
+    if spp_path is None or output_dir is None:
+        USER = os.getlogin()
+
+        ROOT = Path(
+            fr"C:\Users\{USER}\Ambatovy\DMSA - Asset Performance & Excellence - Documents"
+            r"\Strategy and Standardization\3. Improvement Projects\9. Smart Production Plan"
+            r"\SPP development\Python"
+        )
+        INPUT_XLSX = Path(
+            fr"C:\Users\{USER}\Ambatovy\DMSA - Asset Performance & Excellence - Documents"
+            r"\Strategy and Standardization\3. Improvement Projects\9. Smart Production Plan"
+            r"\SPP development\SPP.xlsx"
+        )
+        OUTPUT_DIR = ROOT / "outputs"
+    else:
+        INPUT_XLSX = Path(spp_path)
+        OUTPUT_DIR = Path(output_dir)
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_XLSX = OUTPUT_DIR / "SPP_results.xlsx"
 
