@@ -98,7 +98,7 @@ def compute_commodity_limestone(
         out["Sulphuric acid ratio - HPAL autoclaves (t/t)"] = 0.0
 
     pal_t = out["PAL Feed constrained (t)"].astype(float)
-    fe_pct = out["Fe in PAL Feed (%)"].astype(float)
+    fe_pct = out["Fe in PAL Feed (%)"].astype(float)*100.0
     acid_ratio = out["Sulphuric acid ratio - HPAL autoclaves (t/t)"].astype(float)
 
     inner = (
@@ -448,8 +448,8 @@ def compute_commodity_ammonia(
 
     # Refinery ammonia terms
     pal_feed_t = out["PAL Feed constrained (t)"].astype(float)
-    ni_pct = out["Ni in PAL Feed (%)"].astype(float) / 100.0
-    co_pct = out["Co in PAL Feed (%)"].astype(float) / 100.0
+    ni_pct = out["Ni in PAL Feed (%)"].astype(float)
+    co_pct = out["Co in PAL Feed (%)"].astype(float)
 
     if denom_ref > 0:
         metal_recovered_t = pal_feed_t * ((ni_pct * pal_ni_rec) + (co_pct * pal_co_rec)) / float(denom_ref)

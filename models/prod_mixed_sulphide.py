@@ -101,8 +101,8 @@ def compute_prod_mixed_sulphide(
 
     # --- calculation ---
     pal_feed_t = out["PAL Feed constrained (t)"].astype(float)
-    ni_pct = (out["Ni in PAL Feed (%)"].astype(float) / 100.0)
-    co_pct = (out["Co in PAL Feed (%)"].astype(float) / 100.0)
+    ni_pct = (out["Ni in PAL Feed (%)"].astype(float))
+    co_pct = (out["Co in PAL Feed (%)"].astype(float))
 
     if denom_ms > 0:
         msp_t = pal_feed_t * ((ni_pct * pal_ni_rec) + (co_pct * pal_co_rec)) / float(denom_ms)

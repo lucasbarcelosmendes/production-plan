@@ -112,7 +112,7 @@ def compute_prod_ni(
 
     # ---- compute per-day values ----
     # Ni fraction per day
-    ni_frac_series = base["Ni in PAL Feed (%)"]/100
+    ni_frac_series = base["Ni in PAL Feed (%)"]
 
     # Ni Fed to Ref (t)
     base["Ni Fed to Ref (t)"] = ni_frac_series * pal_ni_rec_f * base["PAL Feed (t)"]

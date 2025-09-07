@@ -1,4 +1,4 @@
-# models/autoclave_rate_loss.py
+# models/autoclave_rate_loss_by_productivity.py
 from __future__ import annotations
 
 from typing import Dict, Any, Optional, List
@@ -6,7 +6,6 @@ import pandas as pd
 
 
 # ---------- helpers ----------
-
 def _get_first_float(d: Dict[str, Any], keys: List[str], default: float = 0.0) -> float:
     for k in keys:
         if k in d and d[k] not in (None, ""):
@@ -17,8 +16,15 @@ def _get_first_float(d: Dict[str, Any], keys: List[str], default: float = 0.0) -
     return float(default)
 
 
+def _get_exact_float(d: Dict[str, Any], key: str, default: float = 0.0) -> float:
+    """Exact key lookup (used for 'Maximum autoclave rate')."""
+    try:
+        return float(d.get(key, default))
+    except Exception:
+        return float(default)
+
+
 def _find_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
-    """Find first matching column name (case-insensitive)."""
     lower = {str(c).lower(): c for c in df.columns}
     for name in candidates:
         got = lower.get(name.lower())
@@ -28,14 +34,13 @@ def _find_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
 
 
 # ---------- 1) Reactor swap loss (3500) — Productivity Method ----------
-
 def compute_reactor_swap_loss(
-    inputs: Dict[str, Any],
+    constants: Dict[str, Any],
     operating_schedule: pd.DataFrame
 ) -> pd.DataFrame:
     """
     Reactor Swap Loss for the *Productivity method*:
-      loss = shutdown3500 * (AC_rate - (AC_rate_3500 / AC_online))
+      loss = shutdown3500 * ((AC_rate_3500 / AC_online) - AC_rate)
     applied only when shutdown3500 > 0 and AC_online > 0
 
     Returns (daily):
@@ -46,9 +51,11 @@ def compute_reactor_swap_loss(
     if operating_schedule is None or operating_schedule.empty:
         return pd.DataFrame(columns=out_cols)
 
-    # Inputs
-    ac_rate = _get_first_float(inputs, ["Autoclave Rates", "Autoclave Rate (t/h)", "Autoclave Rate"], 0.0)
-    ac_rate_3500 = _get_first_float(inputs, ["AC rates during 3500 maintenance", "AC rate during 3500"], 0.0)
+    # Base AC rate comes from inputs.py constant (exact name)
+    ac_rate = _get_exact_float(constants, "Maximum autoclave rate", 0.0)
+
+    # Maintenance rate (keep existing key names; values used as-is)
+    ac_rate_3500 = _get_first_float(constants, ["AC rates during 3500 maintenance", "AC rate during 3500"], 0.0)
 
     # Schedule columns
     date_col = _find_col(operating_schedule, ["Date"])
@@ -71,16 +78,14 @@ def compute_reactor_swap_loss(
     return out[out_cols]
 
 
-
 # ---------- 2) 3100 thickeners loss ----------
-
 def compute_thickeners_shutdown_loss(
-    inputs: Dict[str, Any],
+    constants: Dict[str, Any],
     operating_schedule: pd.DataFrame
 ) -> pd.DataFrame:
     """
     Thickeners shutdown loss:
-      loss = shutdown3100 * (AC_rate - (AC_rate_3100 / AC_online))
+      loss = shutdown3100 * ((AC_rate_3100 / AC_online) - AC_rate)
     applied only when shutdown3100 > 0 and AC_online > 0
 
     Returns (daily):
@@ -91,11 +96,9 @@ def compute_thickeners_shutdown_loss(
     if operating_schedule is None or operating_schedule.empty:
         return pd.DataFrame(columns=out_cols)
 
-    # Inputs
-    ac_rate = _get_first_float(inputs, ["Autoclave Rates", "Autoclave Rate (t/h)", "Autoclave Rate"], 0.0)
-    ac_rate_3100 = _get_first_float(inputs, ["AC rates during 3100 maintenance", "AC rate during 3100"], 0.0)
+    ac_rate = _get_exact_float(constants, "Maximum autoclave rate", 0.0)
+    ac_rate_3100 = _get_first_float(constants, ["AC rates during 3100 maintenance", "AC rate during 3100"], 0.0)
 
-    # Schedule columns
     date_col = _find_col(operating_schedule, ["Date"])
     sh3100_col = _find_col(operating_schedule, ["3100 shutdown hours"])
     ac_online_col = _find_col(operating_schedule, ["Autoclaves Online"])
@@ -117,9 +120,8 @@ def compute_thickeners_shutdown_loss(
 
 
 # ---------- 3) Other productivity loss ----------
-
 def compute_other_productivity_loss(
-    inputs: Dict[str, Any],
+    constants: Dict[str, Any],
     pal_feed_max_by_productivity: pd.DataFrame,
     reactor_swap_loss_productivity_method: pd.DataFrame,
     thickeners_shutdown_loss: pd.DataFrame,
@@ -130,11 +132,6 @@ def compute_other_productivity_loss(
       factor   = 1 - (Internal Productivity Factor * Other External Productivity losses)
       value    = factor * ( PALmax - ReactorSwap - Thickeners )
 
-    Inputs:
-      - pal_feed_max_by_productivity: must contain "PAL Feed max by productivity"
-      - reactor_swap_loss_productivity_method: must contain "Reactor Swap Loss Productivity Method (t)"
-      - thickeners_shutdown_loss: must contain "Thickeners shutdown Loss (t)"
-
     Returns (daily):
       - Date
       - Other Productivity Loss (t)                 [negative]
@@ -143,9 +140,9 @@ def compute_other_productivity_loss(
     if pal_feed_max_by_productivity is None or pal_feed_max_by_productivity.empty:
         return pd.DataFrame(columns=out_cols)
 
-    # Factors
-    internal_factor = _get_first_float(inputs, ["Internal Productivity Factor"], 1.0)
-    external_factor = _get_first_float(inputs, ["Other External Productivity losses"], 1.0)
+    # Factors come from constants (values used as provided)
+    internal_factor = _get_first_float(constants, ["Internal Productivity Factor"], 1.0)
+    external_factor = _get_first_float(constants, ["Other External Productivity losses"], 1.0)
 
     # Required columns
     pf = pal_feed_max_by_productivity.copy()
@@ -165,7 +162,6 @@ def compute_other_productivity_loss(
     tk_col = _find_col(tk, ["Thickeners shutdown Loss (t)"])
     tk[tk_col] = pd.to_numeric(tk[tk_col], errors="coerce").fillna(0.0)
 
-    # Merge & compute
     merged = pf[["Date", pal_col]].merge(rs[["Date", rs_col]], on="Date", how="left") \
                                   .merge(tk[["Date", tk_col]], on="Date", how="left")
 
@@ -176,21 +172,14 @@ def compute_other_productivity_loss(
 
 
 # ---------- 4) Convenience wrapper ----------
-
 def compute_autoclave_rate_loss(
-    inputs: Dict[str, Any],
+    constants: Dict[str, Any],
     operating_schedule: pd.DataFrame,
     pal_feed_max_by_productivity: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    Return all 3 results merged by Date:
-      - Reactor Swap Loss Productivity Method (t)
-      - Thickeners shutdown Loss (t)
-      - Other Productivity Loss (t)
-    """
-    swap = compute_reactor_swap_loss(inputs, operating_schedule)
-    thick = compute_thickeners_shutdown_loss(inputs, operating_schedule)
-    other = compute_other_productivity_loss(inputs, pal_feed_max_by_productivity, swap, thick)
-
+    """Return all 3 results merged by Date."""
+    swap  = compute_reactor_swap_loss(constants, operating_schedule)
+    thick = compute_thickeners_shutdown_loss(constants, operating_schedule)
+    other = compute_other_productivity_loss(constants, pal_feed_max_by_productivity, swap, thick)
     out = swap.merge(thick, on="Date", how="outer").merge(other, on="Date", how="outer")
     return out.sort_values("Date").reset_index(drop=True)

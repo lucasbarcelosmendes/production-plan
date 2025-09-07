@@ -5,9 +5,9 @@ from typing import Dict, Any, Optional, List
 import pandas as pd
 import numpy as np
 
-# Storage bounds
-SAP_STORAGE_CAP = 38000.0
-SAP_STORAGE_FLOOR = 8000.0
+# Default storage bounds (used only as fallbacks if inputs are missing)
+SAP_STORAGE_CAP_DEFAULT = 38000.0
+SAP_STORAGE_FLOOR_DEFAULT = 8000.0
 
 # H2S constants
 GRAMS_PER_TONNE = 1e6
@@ -43,7 +43,7 @@ def compute_acid_model(
     mine_plan_daily: pd.DataFrame,
     pal_feed_selected: pd.DataFrame,
     operation_schedule: Optional[pd.DataFrame] = None,   # for SAP + 6400 shutdown
-    reagent_calendar: Optional[pd.DataFrame] = None,     # for extra H2S from NaSH
+    nash_daily_calendar: Optional[pd.DataFrame] = None,  # NEW: Extra H2S from NaSH (t/day)
 ) -> pd.DataFrame:
     """
     Computes (per day), using PAL-feed-only drivers for acid usage:
@@ -51,11 +51,34 @@ def compute_acid_model(
       • Sulphuric acid used by area (HPAL autoclaves, Demin, Refinery SX, Ferric) (t)
       • Sulphuric acid used (t) [total]
       • Nominal Sulphuric Acid produced (t)
-      • Nominal H2S produced (t)
+      • Nominal H2S produced (t)  <-- includes Extra H2S from NaSH (t/day) if provided
       • Sulphuric acid inventory start/end (t) and actual Sulphuric acid produced (t) [cap-aware]
       • H2S used in Reducing Leach (t), H2S used in Ref (t), H2S Used in MxS (t), Total H2S used (t), H2S constraint (t)
       • PAL Feed constrained (t)  ← final feed after applying H2SO4 floor/cap and H2S availability
     """
+
+    # --- Storage bounds from Inputs (with safe fallbacks & clamping) ---
+    storage_cap = _get_first_float(
+        inputs,
+        ["Acid max inventory (t)", "Acid max inv (t)", "Acid maximum inventory (t)"],
+        SAP_STORAGE_CAP_DEFAULT,
+    )
+    storage_floor = _get_first_float(
+        inputs,
+        ["Acid min inventory (t)", "Acid min inv (t)", "Acid minimum inventory (t)"],
+        SAP_STORAGE_FLOOR_DEFAULT,
+    )
+    # Ensure floor ≤ cap
+    if storage_floor > storage_cap:
+        storage_floor, storage_cap = storage_cap, storage_floor  # swap if mis-ordered
+
+    start_inventory = _get_first_float(
+        inputs,
+        ["Start acid inventory (t)", "Starting acid inventory (t)", "Acid start inventory (t)"],
+        storage_cap,  # default to cap if not provided, like previous behavior
+    )
+    # Clamp start inventory between floor and cap
+    start_inventory = float(np.clip(start_inventory, storage_floor, storage_cap))
 
     # --- Scalars from Inputs ---
     # HPAL acid ratio inputs (keep existing form)
@@ -99,14 +122,14 @@ def compute_acid_model(
     ni_col = _find_col(mine_plan_daily, ["Ni in PAL Feed (%)", "Ni (%)"])
     co_col = _find_col(mine_plan_daily, ["Co in PAL Feed (%)", "Co (%)"])
 
-    # Date harmonization
-    for df in (mine_plan_daily, pal_feed_selected, operation_schedule, reagent_calendar):
+    # Date harmonization (include NaSH daily)
+    for df in (mine_plan_daily, pal_feed_selected, operation_schedule, nash_daily_calendar):
         if isinstance(df, pd.DataFrame) and not df.empty and "Date" in df.columns:
             df["Date"] = df["Date"].astype(str)
 
-    # Out dates = union of all available (include op schedule & reagent calendar for nominals)
+    # Out dates = union of all available (include op schedule & NaSH daily for nominals)
     all_dates = set()
-    for df in (mine_plan_daily, pal_feed_selected, operation_schedule, reagent_calendar):
+    for df in (mine_plan_daily, pal_feed_selected, operation_schedule, nash_daily_calendar):
         if isinstance(df, pd.DataFrame) and not df.empty and "Date" in df.columns:
             all_dates.update(df["Date"].dropna().unique())
     out = pd.DataFrame({"Date": sorted(all_dates)})
@@ -149,9 +172,9 @@ def compute_acid_model(
         21.3 * out["Al in PAL Feed (%)"]
         + 27.8 * out["Mg in PAL Feed (%)"]
         - 2.4  * out["Fe in PAL Feed (%)"]
-        - 7.9  * float(solids_pct) * 100
-        + 6.308 * float(hpal_ni_ext_pct) * 100
-    ) / 1000.0
+        - 7.9  * float(solids_pct)
+        + 6.308 * float(hpal_ni_ext_pct)
+    ) / 10.0
 
     # --- Nominal SAP & H2S production ---
     # Bring SAP & 6400 shutdown hours if operation schedule provided
@@ -185,25 +208,29 @@ def compute_acid_model(
     out["Nominal Sulphuric Acid produced (t)"] = (48.0 - out["SAP shutdown hours"].fillna(0.0)) * float(sap_rate_tph) / 0.33
     out["Nominal Sulphuric Acid produced (t)"] = out["Nominal Sulphuric Acid produced (t)"].clip(lower=0.0)
 
-    # Nominal H2S produced (t) = (2 - shutdown6400/24) * capPerTrain * capacity6400 + extraH2S
-    extra_keys = ["Extra H2S from NaSH (t/day)", "Extra H2S from NaSH", "NaSH H2S (t/day)"]
+    # --- Extra H2S from NaSH (t/day) by Date ---
     extra_by_date: Dict[str, float] = {}
-    if isinstance(reagent_calendar, pd.DataFrame) and not reagent_calendar.empty:
-        rc_date_col = _find_col(reagent_calendar, ["Date"])
-        reagent_col = _find_col(reagent_calendar, extra_keys)
-        if rc_date_col and reagent_col:
-            rc = reagent_calendar[[rc_date_col, reagent_col]].copy()
-            rc["Date"] = rc[rc_date_col].astype(str)
-            rc_val = pd.to_numeric(rc[reagent_col], errors="coerce").fillna(0.0)
+    if isinstance(nash_daily_calendar, pd.DataFrame) and not nash_daily_calendar.empty:
+        date_col = _find_col(nash_daily_calendar, ["Date"])
+        nash_col = _find_col(nash_daily_calendar, ["Extra H2S from NaSH (t/day)"])
+        if date_col and nash_col:
+            rc = nash_daily_calendar[[date_col, nash_col]].copy()
+            rc["Date"] = rc[date_col].astype(str)
+            rc_val = pd.to_numeric(rc[nash_col], errors="coerce").fillna(0.0)
             extra_by_date = dict(zip(rc["Date"], rc_val))
     extra_series = out["Date"].map(extra_by_date).fillna(0.0)
+
+    # Nominal H2S produced (t) = (2 - shutdown6400/24) * capPerTrain * capacity6400 + extraH2S
     shut6400 = pd.to_numeric(out["6400 shutdown hours"], errors="coerce").fillna(0.0)
-    out["Nominal H2S produced (t)"] = (2.0 - (shut6400 / 24.0)) * float(cap_per_train) * float(capacity6400) + extra_series
+    out["Nominal H2S produced (t)"] = (
+        (2.0 - (shut6400 / 24.0)) * float(cap_per_train) * float(capacity6400)
+        + extra_series
+    )
     out["Nominal H2S produced (t)"] = out["Nominal H2S produced (t)"].clip(lower=0.0)
 
     # --- Coefficients that make acid usage linear in PAL feed ---
-    ni_frac = (out["Ni in PAL Feed (%)"] / 100.0).clip(lower=0.0)
-    co_frac = (out["Co in PAL Feed (%)"] / 100.0).clip(lower=0.0)
+    ni_frac = (out["Ni in PAL Feed (%)"]).clip(lower=0.0)
+    co_frac = (out["Co in PAL Feed (%)"]).clip(lower=0.0)
 
     # Metals per tonne feed effectively driving SX (t metal / t feed)
     metals_per_t_feed = (pal_ni_rec * ni_frac + pal_co_rec * co_frac) * sx_processing_frac
@@ -235,7 +262,8 @@ def compute_acid_model(
     pal_final_list = []
     used_h2s_RL_list, used_h2s_REF_list, used_h2s_MXS_list, used_h2s_total_list, h2s_constraint_list = [], [], [], [], []
 
-    S = SAP_STORAGE_CAP  # first day start inventory = 38,000
+    # First day start inventory comes from Inputs (clamped between min/max)
+    S = start_inventory
 
     for i in range(len(out)):
         coeff_i = float(max(0.0, coeff_tpt.iloc[i]))
@@ -245,7 +273,7 @@ def compute_acid_model(
         H2S_nom_i= float(max(0.0, h2s_nom.iloc[i]))
 
         # Acid floor-based feed max
-        limit_acid = S + P_nom_i - SAP_STORAGE_FLOOR
+        limit_acid = S + P_nom_i - storage_floor
         pal_acid_max = 0.0 if (limit_acid <= 0.0 or coeff_i <= 0.0) else (limit_acid / coeff_i)
 
         # H2S-based feed max (if denom_i == 0 -> no H2S requirement from feed)
@@ -258,9 +286,9 @@ def compute_acid_model(
         # Acid usage & inventory
         used_acid = coeff_i * pal_final
         end_unconstrained = S + P_nom_i - used_acid
-        if end_unconstrained > SAP_STORAGE_CAP:
-            end_inv = SAP_STORAGE_CAP
-            prod_act = SAP_STORAGE_CAP - S + used_acid
+        if end_unconstrained > storage_cap:
+            end_inv = storage_cap
+            prod_act = storage_cap - S + used_acid
         else:
             end_inv = end_unconstrained
             prod_act = P_nom_i

@@ -112,7 +112,7 @@ def compute_prod_co(
 
     # ---- compute per-day values ----
     # Co fraction per day
-    co_frac_series = base["Co in PAL Feed (%)"]/100
+    co_frac_series = base["Co in PAL Feed (%)"]
 
     # Ni Fed to Ref (t)
     base["Co Fed to Ref (t)"] = co_frac_series * pal_co_rec_f * base["PAL Feed (t)"]
