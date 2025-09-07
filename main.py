@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import pandas as pd
 
+from models.inputs import load_inputs
 from models.operation_schedule import compute_operation_schedule
 from models.max_pal_feed_by_productivity import compute_max_pal_feed_by_productivity
 from models.pal_feed_by_productivity import compute_pal_feed_by_productivity_final
@@ -11,8 +12,7 @@ from models.autoclave_rate_loss_by_productivity import (
     compute_thickeners_shutdown_loss,
     compute_other_productivity_loss,
 )
-from models.reagent_forecast import compute_reagent_daily_calendar
-from models.mine_plan_daily import compute_mine_plan_daily_calendar
+from models.mine_plan import compute_mine_plan_daily_calendar
 from models.pal_feed_by_imposed_daily_rate import (
     compute_pal_feed_by_imposed_daily_rate,
 )
@@ -24,6 +24,7 @@ from models.prod_ni import compute_prod_ni
 from models.prod_co import compute_prod_co
 from models.prod_amsul import compute_prod_amsul
 from models.acid_model import compute_acid_model  # consolidated: acid + H2S + inventories (+ constrained PAL)
+from models.h2s_from_nash import compute_h2s_from_nash_daily  # NEW
 
 # NEW: mixed sulphide + commodities
 from models.prod_mixed_sulphide import compute_prod_mixed_sulphide
@@ -50,59 +51,49 @@ def _pick_sheet(sheets, *names):
     return None
 
 
-def _parse_inputs(sheets) -> dict:
-    key = next((k for k in sheets if str(k).lower() == "inputs"), None)
-    if not key:
-        return {}
-    df = sheets[key].copy().dropna(how="all")
-    cols_lower = [str(c).lower() for c in df.columns]
+def main():
+    USER = os.getlogin()
 
-    if "key" in cols_lower and "value" in cols_lower:
-        key_col = df.columns[cols_lower.index("key")]
-        val_col = df.columns[cols_lower.index("value")]
-        pairs = zip(df[key_col], df[val_col])
-    else:
-        if df.shape[1] < 2:
-            return {}
-        pairs = zip(df.iloc[:, 0], df.iloc[:, 1])
+    ROOT = Path(
+        fr"C:\Users\{USER}\Ambatovy\DMSA - Asset Performance & Excellence - Documents"
+        r"\Strategy and Standardization\3. Improvement Projects\9. Smart Production Plan"
+        r"\SPP development\Python"
+    )
+    INPUT_XLSX = Path(
+        fr"C:\Users\{USER}\Ambatovy\DMSA - Asset Performance & Excellence - Documents"
+        r"\Strategy and Standardization\3. Improvement Projects\9. Smart Production Plan"
+        r"\SPP development\SPP.xlsx"
+    )
+    OUTPUT_DIR = ROOT / "outputs"
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_XLSX = OUTPUT_DIR / "SPP_results.xlsx"
 
-    out = {}
-    for k, v in pairs:
-        if pd.isna(k):
-            continue
-        out[str(k).strip()] = v
-    return out
+    # Returns cleaned `constants` and `daily_variables` (enriched with shutdown markers)
+    constants_new, daily_variables = load_inputs(INPUT_XLSX)
+
+    # 0) NaSH daily (preprocessed daily_variables)
+    nash_daily_calendar = compute_h2s_from_nash_daily(daily_variables)
+
+    # 1) Operation Schedule — NEW STRATEGY (consumes inputs.py outputs)
+    op_sched = compute_operation_schedule(
+        daily_variables=daily_variables,
+        constants=constants_new,
+        total_autoclaves=5,
+    )
+
+    # 2) PAL Feed MAX (by productivity) — unchanged
+    pal_feed_max = compute_max_pal_feed_by_productivity(constants_new, op_sched)
+
+    # 3) Losses (productivity method) — now use constants_new from inputs.py
+    swap_loss  = compute_reactor_swap_loss(constants_new, op_sched)
+    thick_loss = compute_thickeners_shutdown_loss(constants_new, op_sched)
+    other_loss = compute_other_productivity_loss(constants_new, pal_feed_max, swap_loss, thick_loss)
 
 
-def run_transformations(config: dict):
-    sheets = config["sheets"]
-    output_xlsx = Path(config["output_xlsx"])
-    output_xlsx.parent.mkdir(parents=True, exist_ok=True)
+    # 4) Mine Plan -> daily Ni/Co% & chemistry drivers — unchanged
+    mine_plan_daily = compute_mine_plan_daily_calendar(daily_variables)
 
-    # Inputs + calendars
-    inputs = _parse_inputs(sheets)
-    shutdown_calendar = _pick_sheet(sheets, "Shutdown Calendar", "shutdown_calendar", "Shutdown calendar")
-    reagent_forecast_sheet = _pick_sheet(sheets, "Reagent Forecast", "Reagents Forecast", "reagent_forecast")
-    mine_plan_sheet = _pick_sheet(sheets, "Mine Plan Daily Calendar", "Mine Plan Daily", "Mine Plan")
-
-    # 0) Reagent forecast -> daily calendar (for potential extra H2S from NaSH)
-    reagent_daily_calendar = compute_reagent_daily_calendar(reagent_forecast_sheet)
-
-    # 1) Operation Schedule (incl. SAP & 6400 shutdown hours)
-    op_sched = compute_operation_schedule(inputs, shutdown_calendar)
-
-    # 2) PAL Feed MAX (by productivity)
-    pal_feed_max = compute_max_pal_feed_by_productivity(inputs, op_sched)
-
-    # 3) Losses (productivity method)
-    swap_loss = compute_reactor_swap_loss(inputs, op_sched)
-    thick_loss = compute_thickeners_shutdown_loss(inputs, op_sched)
-    other_loss = compute_other_productivity_loss(inputs, pal_feed_max, swap_loss, thick_loss)
-
-    # 4) Mine Plan -> daily Ni/Co% & chemistry drivers
-    mine_plan_daily = compute_mine_plan_daily_calendar(mine_plan_sheet)
-
-    # 5) PAL feed by productivity (net of losses)
+    # 5) PAL feed by productivity (net of losses) — unchanged
     pal_feed_final = compute_pal_feed_by_productivity_final(
         pal_feed_by_productivity=pal_feed_max,
         reactor_swap_loss=swap_loss,
@@ -110,19 +101,19 @@ def run_transformations(config: dict):
         other_productivity_loss=other_loss,
     )
 
-    # 6) Losses (imposed daily rate method)
-    swap_loss_daily_rate = compute_reactor_swap_loss_imposed_daily_rate_method(inputs, op_sched)
+    # 6) Losses (imposed daily rate method) — unchanged
+    swap_loss_daily_rate = compute_reactor_swap_loss_imposed_daily_rate_method(constants_new, op_sched)
 
-    # 7) PAL feed by imposed daily rate
+    # 7) PAL feed by imposed daily rate — unchanged
     pal_feed_imposed = compute_pal_feed_by_imposed_daily_rate(
-        inputs=inputs,
+        inputs=constants_new,
         operation_schedule=op_sched,
         reactor_swap_loss=swap_loss_daily_rate,
     )
 
-    # 8) PAL feed method selection (final selected PAL feed) — pass op_sched so TOPH can be computed
+    # 8) PAL feed method selection (final selected PAL feed) — unchanged
     pal_feed_selected = compute_selected_pal_feed(
-        inputs=inputs,
+        inputs=constants_new,
         pal_by_productivity=pal_feed_final,
         pal_by_imposed=pal_feed_imposed,
         mine_plan=mine_plan_daily,
@@ -131,64 +122,63 @@ def run_transformations(config: dict):
 
     # ---------- ACID MODEL FIRST (constrains PAL feed and computes acid/H2S/inventories) ----------
     acid_model_df = compute_acid_model(
-        inputs=inputs,
+        inputs=constants_new,
         mine_plan_daily=mine_plan_daily,
-        pal_feed_selected=pal_feed_selected,   # input: selected PAL feed
+        pal_feed_selected=pal_feed_selected,
         operation_schedule=op_sched,
-        reagent_calendar=reagent_daily_calendar,
+        nash_daily_calendar=nash_daily_calendar,
     )
 
-    # Build a PAL feed DataFrame for production modules using the constrained feed from the acid model
+    # Build a PAL feed DataFrame for production modules using the constrained feed from the acid model — unchanged
     pal_feed_constrained = pd.DataFrame({"Date": acid_model_df.get("Date", pd.Series(dtype=str))})
     if "PAL Feed constrained (t)" in acid_model_df.columns:
         pal_feed_constrained["PAL Feed (t)"] = pd.to_numeric(
             acid_model_df["PAL Feed constrained (t)"], errors="coerce"
         ).fillna(0.0)
     else:
-        # Fallback to selected feed if constrained not available
         pf_col = next((c for c in pal_feed_selected.columns if c.lower() == "pal feed (t)".lower()), None)
         pal_feed_constrained = (
-            pal_feed_selected[["Date", pf_col]].rename(columns={pf_col: "PAL Feed (t)"}) if pf_col else pal_feed_constrained
+            pal_feed_selected[["Date", pf_col]].rename(columns={pf_col: "PAL Feed (t)"})
+            if pf_col else pal_feed_constrained
         )
 
-    # 9) Nickel production & refinery inventory (now using the **constrained** PAL feed)
-    ni_prod_df = compute_prod_ni(inputs, op_sched, pal_feed_constrained, mine_plan_daily)
+    # 9) Nickel production & refinery inventory — unchanged
+    ni_prod_df = compute_prod_ni(constants_new, op_sched, pal_feed_constrained, mine_plan_daily)
 
-    # 10) Cobalt production & refinery inventory (now using the **constrained** PAL feed)
-    co_prod_df = compute_prod_co(inputs, op_sched, pal_feed_constrained, mine_plan_daily)
+    # 10) Cobalt production & refinery inventory — unchanged
+    co_prod_df = compute_prod_co(constants_new, op_sched, pal_feed_constrained, mine_plan_daily)
 
-    # 11) Ammonium Sulfate production
-    amsul_df = compute_prod_amsul(inputs, ni_prod_df, co_prod_df)
+    # 11) Ammonium Sulfate production — unchanged
+    amsul_df = compute_prod_amsul(constants_new, ni_prod_df, co_prod_df)
 
     # ---------- NEW: Mixed Sulphide Production (for commodities) ----------
     mixed_sulphide_df = compute_prod_mixed_sulphide(
-        inputs=inputs,
-        acid_model_df=acid_model_df,      # needs Date, PAL Feed constrained (t)
-        mine_plan_daily=mine_plan_daily,  # needs Date, Ni/Co in PAL Feed (%)
+        inputs=constants_new,
+        acid_model_df=acid_model_df,
+        mine_plan_daily=mine_plan_daily,
     )
 
     # ---------- NEW: Commodities ----------
-    # Limestone (feeds Coal)
     limestone_df = compute_commodity_limestone(
-        inputs=inputs,
+        inputs=constants_new,
         mine_plan_daily=mine_plan_daily,
         acid_model_df=acid_model_df,
     )
 
     coal_df = compute_commodity_coal(
-        inputs=inputs,
+        inputs=constants_new,
         operation_schedule=op_sched,
         acid_model_df=acid_model_df,
         limestone_df=limestone_df,
     )
 
     sulphur_df = compute_commodity_sulphur(
-        inputs=inputs,
+        inputs=constants_new,
         acid_model_df=acid_model_df,
     )
 
     naphtha_df = compute_commodity_naphtha(
-        inputs=inputs,
+        inputs=constants_new,
         operation_schedule=op_sched,
         acid_model_df=acid_model_df,
         ni_prod_df=ni_prod_df,
@@ -196,14 +186,14 @@ def run_transformations(config: dict):
     )
 
     ammonia_df = compute_commodity_ammonia(
-        inputs=inputs,
+        inputs=constants_new,
         operation_schedule=op_sched,
         acid_model_df=acid_model_df,
         mine_plan_daily=mine_plan_daily,
     )
 
     lpg_df = compute_commodity_lpg(
-        inputs=inputs,
+        inputs=constants_new,
         operation_schedule=op_sched,
         acid_model_df=acid_model_df,
         ni_prod_df=ni_prod_df,
@@ -212,7 +202,7 @@ def run_transformations(config: dict):
     )
 
     caustic_df = compute_commodity_caustic_soda(
-        inputs=inputs,
+        inputs=constants_new,
         mixed_sulphide_df=mixed_sulphide_df,
     )
 
@@ -228,7 +218,6 @@ def run_transformations(config: dict):
             df["Date"] = df["Date"].astype(str)
 
     # ---------- Build final table (merge by Date) ----------
-    # Drop any columns that may collide when merging
     for col in [
         "Autoclave Rate (t/h) by Productivity",
         "PAL Feed max by productivity",
@@ -265,7 +254,6 @@ def run_transformations(config: dict):
         "Nominal H2S produced (t)",
         "H2S constraint (t)",
         "PAL Feed constrained (t)",
-        # Commodity columns are new; no need to drop
     ]:
         if col in op_sched.columns:
             op_sched = op_sched.drop(columns=[col])
@@ -286,6 +274,10 @@ def run_transformations(config: dict):
         merged = merged.merge(pal_feed_imposed, on="Date", how="left")
     if pal_feed_selected is not None and not pal_feed_selected.empty:
         merged = merged.merge(pal_feed_selected, on="Date", how="left")
+
+    #Extra H2S from Nash
+    if nash_daily_calendar is not None and not nash_daily_calendar.empty:
+        merged = merged.merge(nash_daily_calendar, on="Date", how="left")
 
     # Merge Acid Model in the required order (only include columns that exist)
     if acid_model_df is not None and not acid_model_df.empty:
@@ -316,12 +308,12 @@ def run_transformations(config: dict):
     if ni_prod_df is not None and not ni_prod_df.empty:
         merged = merged.merge(
             ni_prod_df[["Date", "Ni Fed to Ref (t)", "Ni Prod (t)", "Ni inventory in refinery (t)"]],
-            on="Date", how="left",
+            on="Date", how="left"
         )
     if co_prod_df is not None and not co_prod_df.empty:
         merged = merged.merge(
             co_prod_df[["Date", "Co Fed to Ref (t)", "Co Prod (t)", "Co inventory in refinery (t)"]],
-            on="Date", how="left",
+            on="Date", how="left"
         )
     if amsul_df is not None and not amsul_df.empty:
         merged = merged.merge(amsul_df, on="Date", how="left")
@@ -336,7 +328,6 @@ def run_transformations(config: dict):
     if sulphur_df is not None and not sulphur_df.empty:
         merged = merged.merge(sulphur_df, on="Date", how="left")
     if naphtha_df is not None and not naphtha_df.empty:
-        # Avoid re-merging Mixed Sulphide column from LPG block (we already merged it)
         cols = [c for c in naphtha_df.columns if c != "Mixed Sulphide Produced (t)"]
         merged = merged.merge(naphtha_df[cols], on="Date", how="left")
     if ammonia_df is not None and not ammonia_df.empty:
@@ -377,7 +368,7 @@ def run_transformations(config: dict):
         except Exception:
             pass
 
-    with pd.ExcelWriter(output_xlsx, engine="openpyxl") as xw:
+    with pd.ExcelWriter(OUTPUT_XLSX, engine="openpyxl") as xw:
         _write_sheet(xw, merged, "Plant Operation Schedule")
         # Node-level tabs
         _write_sheet(xw, op_sched, "Operation Schedule")
@@ -405,20 +396,9 @@ def run_transformations(config: dict):
         _write_sheet(xw, caustic_df, "Commodity - Caustic Soda")
         _write_sheet(xw, merged_month, "Summary by Month")
 
-    print(f"[run_transformations] Rows written: {len(merged)} -> {output_xlsx}")
-    return mine_plan_daily, merged, merged_month
-
-
-def main(config: dict = None):
-    config = dict(config or {})
-    input_xlsx = Path(config.get("input_xlsx", "SPP.xlsx"))
-    output_xlsx = Path(config.get("output_xlsx", Path("outputs") / "SPP_results.xlsx"))
-    config.setdefault("output_xlsx", output_xlsx)
-    if "sheets" not in config:
-        config["sheets"] = pd.read_excel(input_xlsx, sheet_name=None, engine="openpyxl")
-    return run_transformations(config)
+    print(f"[main] Rows written: {len(merged)} -> {OUTPUT_XLSX}")
+    return constants_new, mine_plan_daily, merged, merged_month
 
 
 if __name__ == "__main__":
-    mine_plan_daily, merged, merged_month = main()
-
+    constants_new, mine_plan_daily, merged, merged_month = main()
